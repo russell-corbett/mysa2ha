@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import asyncio
+import logging
+import time
 from typing import Any
 
 from homeassistant.components.climate import ClimateEntity
@@ -36,6 +38,8 @@ MYSA_TO_HVAC = {
     "fan_only": HVACMode.FAN_ONLY,
     "auto": HVACMode.HEAT_COOL,
 }
+
+_LOGGER = logging.getLogger(__name__)
 
 
 async def async_setup_entry(
@@ -167,11 +171,30 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
             self._pending_hvac_mode = HVACMode.HEAT
 
         await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint, mode=mode)
+        command_id = f"{self._device_id}-{int(time.time() * 1000)}"
+        _LOGGER.debug(
+            "Mysa command %s set_temperature device=%s setpoint=%.2f mode=%s",
+            command_id,
+            self._device_id,
+            setpoint,
+            mode,
+        )
+        self.hass.bus.async_fire(
+            "mysa_command_debug",
+            {
+                "command_id": command_id,
+                "device_id": self._device_id,
+                "action": "set_temperature",
+                "setpoint": setpoint,
+                "mode": mode,
+            },
+        )
         self.hass.async_create_task(
             self._async_delayed_refresh(
                 expected_setpoint=setpoint,
                 expected_mode=HVACMode.HEAT if mode == "heat" else None,
                 resend_command={"setpoint": setpoint, "mode": mode},
+                command_id=command_id,
             )
         )
 
@@ -185,10 +208,22 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self.async_write_ha_state()
 
         await self.coordinator.client.async_set_device_state(self._device, mode=mysa_mode)
+        command_id = f"{self._device_id}-{int(time.time() * 1000)}"
+        _LOGGER.debug("Mysa command %s set_hvac_mode device=%s mode=%s", command_id, self._device_id, hvac_mode)
+        self.hass.bus.async_fire(
+            "mysa_command_debug",
+            {
+                "command_id": command_id,
+                "device_id": self._device_id,
+                "action": "set_hvac_mode",
+                "mode": str(hvac_mode),
+            },
+        )
         self.hass.async_create_task(
             self._async_delayed_refresh(
                 expected_mode=hvac_mode,
                 resend_command={"mode": mysa_mode},
+                command_id=command_id,
             )
         )
 
@@ -198,10 +233,22 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self.async_write_ha_state()
 
         await self.coordinator.client.async_set_device_state(self._device, fan_speed=fan_mode)
+        command_id = f"{self._device_id}-{int(time.time() * 1000)}"
+        _LOGGER.debug("Mysa command %s set_fan_mode device=%s fan_mode=%s", command_id, self._device_id, fan_mode)
+        self.hass.bus.async_fire(
+            "mysa_command_debug",
+            {
+                "command_id": command_id,
+                "device_id": self._device_id,
+                "action": "set_fan_mode",
+                "fan_mode": fan_mode,
+            },
+        )
         self.hass.async_create_task(
             self._async_delayed_refresh(
                 expected_fan_mode=fan_mode,
                 resend_command={"fan_speed": fan_mode},
+                command_id=command_id,
             )
         )
 
@@ -212,19 +259,75 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         expected_mode: HVACMode | None = None,
         expected_fan_mode: str | None = None,
         resend_command: dict[str, Any] | None = None,
+        command_id: str = "unknown",
     ) -> None:
         """Refresh until command is reflected or timeout occurs."""
         resent = False
         for attempt in range(6):
             await asyncio.sleep(2)
             await self.coordinator.async_request_refresh()
+            current_setpoint = _state_value(self.state_obj, "SetPoint")
+            current_mode = self.hvac_mode
+            current_fan = self.fan_mode
+            _LOGGER.debug(
+                "Mysa command %s verify attempt=%d expected_setpoint=%s expected_mode=%s expected_fan=%s current_setpoint=%s current_mode=%s current_fan=%s",
+                command_id,
+                attempt + 1,
+                expected_setpoint,
+                expected_mode,
+                expected_fan_mode,
+                current_setpoint,
+                current_mode,
+                current_fan,
+            )
             if self._is_expected_state_applied(expected_setpoint, expected_mode, expected_fan_mode):
+                self.hass.bus.async_fire(
+                    "mysa_command_debug",
+                    {
+                        "command_id": command_id,
+                        "device_id": self._device_id,
+                        "status": "applied",
+                        "attempt": attempt + 1,
+                        "current_setpoint": current_setpoint,
+                        "current_mode": str(current_mode) if current_mode is not None else None,
+                        "current_fan_mode": current_fan,
+                    },
+                )
                 break
 
             # Some Mysa devices ignore an occasional command; retry once if needed.
             if attempt == 2 and resend_command and not resent:
+                _LOGGER.debug("Mysa command %s retrying payload=%s", command_id, resend_command)
                 await self.coordinator.client.async_set_device_state(self._device, **resend_command)
                 resent = True
+                self.hass.bus.async_fire(
+                    "mysa_command_debug",
+                    {
+                        "command_id": command_id,
+                        "device_id": self._device_id,
+                        "status": "retry_sent",
+                        "payload": resend_command,
+                    },
+                )
+        else:
+            _LOGGER.warning(
+                "Mysa command %s not applied after verification window; state may bounce",
+                command_id,
+            )
+            self.hass.bus.async_fire(
+                "mysa_command_debug",
+                {
+                    "command_id": command_id,
+                    "device_id": self._device_id,
+                    "status": "not_applied",
+                    "expected_setpoint": expected_setpoint,
+                    "expected_mode": str(expected_mode) if expected_mode is not None else None,
+                    "expected_fan_mode": expected_fan_mode,
+                    "current_setpoint": _state_value(self.state_obj, "SetPoint"),
+                    "current_mode": str(self.hvac_mode) if self.hvac_mode is not None else None,
+                    "current_fan_mode": self.fan_mode,
+                },
+            )
 
         self._pending_target_temperature = None
         self._pending_hvac_mode = None

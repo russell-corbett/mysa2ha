@@ -172,6 +172,7 @@ class MysaApiClient:
 
     async def _async_publish_iot_payload(self, topic: str, payload_bytes: bytes) -> None:
         """Publish payload to a device input topic with auth retry."""
+        self.logger.debug("Publishing Mysa IoT payload topic=%s bytes=%d", topic, len(payload_bytes))
 
         for attempt in (1, 2):
             creds = await self._async_get_iot_credentials()
@@ -183,10 +184,18 @@ class MysaApiClient:
                     payload_bytes,
                     creds,
                 )
+                self.logger.debug("Mysa IoT publish success topic=%s attempt=%d", topic, attempt)
                 return
             except BotoClientError as err:
                 code = err.response.get("Error", {}).get("Code", "UnknownError")
                 message = err.response.get("Error", {}).get("Message", str(err))
+                self.logger.debug(
+                    "Mysa IoT publish error topic=%s attempt=%d code=%s message=%s",
+                    topic,
+                    attempt,
+                    code,
+                    message,
+                )
                 if code in {"AccessDeniedException", "ForbiddenException", "UnauthorizedException"}:
                     self._iot_credentials = None
                     if attempt == 1:
