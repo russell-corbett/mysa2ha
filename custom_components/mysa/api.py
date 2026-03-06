@@ -156,21 +156,12 @@ class MysaApiClient:
         for attempt in (1, 2):
             creds = await self._async_get_iot_credentials()
 
-            iot_data = boto3.client(
-                "iot-data",
-                region_name=AWS_REGION,
-                endpoint_url=IOT_DATA_ENDPOINT,
-                aws_access_key_id=creds.access_key_id,
-                aws_secret_access_key=creds.secret_key,
-                aws_session_token=creds.session_token,
-            )
-
             try:
                 await asyncio.to_thread(
-                    iot_data.publish,
-                    topic=topic,
-                    qos=1,
-                    payload=payload_bytes,
+                    self._publish_iot_command_sync,
+                    topic,
+                    payload_bytes,
+                    creds,
                 )
                 return
             except BotoClientError as err:
@@ -184,6 +175,18 @@ class MysaApiClient:
                 raise MysaError(f"Mysa IoT publish failed ({code}): {message}") from err
             except BotoCoreError as err:
                 raise MysaCannotConnect(f"Unable to publish command to Mysa IoT: {err}") from err
+
+    def _publish_iot_command_sync(self, topic: str, payload: bytes, creds: IotCredentials) -> None:
+        """Publish command to AWS IoT (blocking, run in worker thread)."""
+        iot_data = boto3.client(
+            "iot-data",
+            region_name=AWS_REGION,
+            endpoint_url=IOT_DATA_ENDPOINT,
+            aws_access_key_id=creds.access_key_id,
+            aws_secret_access_key=creds.secret_key,
+            aws_session_token=creds.session_token,
+        )
+        iot_data.publish(topic=topic, qos=1, payload=payload)
 
     async def _async_get_json(self, path: str, *, retried: bool = False) -> dict[str, Any]:
         """Perform authenticated GET request."""
