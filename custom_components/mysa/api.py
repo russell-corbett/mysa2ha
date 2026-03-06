@@ -371,7 +371,7 @@ class MysaApiClient:
         now_epoch = int(time.time())
 
         payload: dict[str, Any] = {
-            "msg": 2,
+            "msg": 44,
             "id": now_epoch_ms,
             "time": now_epoch,
             "ver": "1.0",
