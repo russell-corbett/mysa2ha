@@ -149,8 +149,9 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         temperature = kwargs.get("temperature")
         if temperature is None:
             return
+        requested_temperature = float(temperature)
 
-        setpoint = float(temperature)
+        setpoint = requested_temperature
         if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT:
             setpoint = (setpoint - 32.0) * 5.0 / 9.0
 
@@ -165,10 +166,22 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self.async_write_ha_state()
 
         mode = None
-        if not self._is_ac and self.hvac_mode == HVACMode.OFF:
-            # Baseboard devices can ignore setpoint changes while off.
+        if not self._is_ac:
+            # Baseboard devices can ignore setpoint-only changes; include explicit heat mode.
             mode = "heat"
             self._pending_hvac_mode = HVACMode.HEAT
+        elif self.hvac_mode is not None:
+            mode = HVAC_TO_MYSA.get(self.hvac_mode)
+
+        _LOGGER.debug(
+            "Mysa set_temperature request device=%s requested=%.2f celsius_setpoint=%.2f min=%s max=%s selected_mode=%s",
+            self._device_id,
+            requested_temperature,
+            setpoint,
+            self._attr_min_temp,
+            self._attr_max_temp,
+            mode,
+        )
 
         await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint, mode=mode)
         command_id = f"{self._device_id}-{int(time.time() * 1000)}"
