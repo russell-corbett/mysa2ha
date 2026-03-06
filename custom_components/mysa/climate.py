@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from homeassistant.components.climate import ClimateEntity
@@ -75,6 +76,10 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         if max_setpoint is not None:
             self._attr_max_temp = float(max_setpoint)
 
+        self._pending_target_temperature: float | None = None
+        self._pending_hvac_mode: HVACMode | None = None
+        self._pending_fan_mode: str | None = None
+
     @property
     def current_temperature(self) -> float | None:
         """Return current temperature."""
@@ -83,6 +88,8 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
     @property
     def target_temperature(self) -> float | None:
         """Return target temperature."""
+        if self._pending_target_temperature is not None:
+            return self._pending_target_temperature
         if self.hvac_mode == HVACMode.OFF:
             return None
         return _state_value(self.state_obj, "SetPoint")
@@ -95,6 +102,8 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
     @property
     def hvac_mode(self) -> HVACMode | None:
         """Return current hvac mode."""
+        if self._pending_hvac_mode is not None:
+            return self._pending_hvac_mode
         mode_value = _state_value(self.state_obj, "TstatMode")
         if mode_value is None:
             return None
@@ -125,6 +134,8 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
     @property
     def fan_mode(self) -> str | None:
         """Return fan mode."""
+        if self._pending_fan_mode is not None:
+            return self._pending_fan_mode
         fan_value = _state_value(self.state_obj, "FanSpeed")
         return RAW_TO_FAN.get(int(fan_value)) if fan_value is not None else None
 
@@ -134,8 +145,22 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         if temperature is None:
             return
 
-        await self.coordinator.client.async_set_device_state(self._device, setpoint=float(temperature))
-        await self.coordinator.async_request_refresh()
+        setpoint = float(temperature)
+        if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT:
+            setpoint = (setpoint - 32.0) * 5.0 / 9.0
+
+        # Mysa setpoints are in 0.5C increments.
+        setpoint = round(setpoint * 2) / 2
+        if self._attr_min_temp is not None:
+            setpoint = max(setpoint, float(self._attr_min_temp))
+        if self._attr_max_temp is not None:
+            setpoint = min(setpoint, float(self._attr_max_temp))
+
+        self._pending_target_temperature = setpoint
+        self.async_write_ha_state()
+
+        await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint)
+        self.hass.async_create_task(self._async_delayed_refresh())
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
@@ -143,13 +168,28 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         if mysa_mode is None:
             return
 
+        self._pending_hvac_mode = hvac_mode
+        self.async_write_ha_state()
+
         await self.coordinator.client.async_set_device_state(self._device, mode=mysa_mode)
-        await self.coordinator.async_request_refresh()
+        self.hass.async_create_task(self._async_delayed_refresh())
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set fan mode."""
+        self._pending_fan_mode = fan_mode
+        self.async_write_ha_state()
+
         await self.coordinator.client.async_set_device_state(self._device, fan_speed=fan_mode)
+        self.hass.async_create_task(self._async_delayed_refresh())
+
+    async def _async_delayed_refresh(self) -> None:
+        """Refresh after a short delay to allow cloud state propagation."""
+        await asyncio.sleep(4)
         await self.coordinator.async_request_refresh()
+        self._pending_target_temperature = None
+        self._pending_hvac_mode = None
+        self._pending_fan_mode = None
+        self.async_write_ha_state()
 
 
 def _state_value(state_obj: dict[str, Any], key: str) -> float | None:
