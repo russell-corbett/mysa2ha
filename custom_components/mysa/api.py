@@ -151,64 +151,39 @@ class MysaApiClient:
             fan_speed=fan_speed,
         )
         payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-
         topic = f"/v1/dev/{device['Id']}/in"
-        encoded_topic = urllib.parse.quote(topic, safe="/")
-        path = f"/topics/{encoded_topic}"
-        query = "qos=1"
-        session = async_get_clientsession(self.hass)
 
         for attempt in (1, 2):
             creds = await self._async_get_iot_credentials()
-            amz_date, date_stamp = _aws_timestamps()
-            signed_headers = {
-                "content-type": "application/octet-stream",
-                "host": IOT_DATA_HOST,
-                "x-amz-date": amz_date,
-                "x-amz-security-token": creds.session_token,
-            }
-            authorization = _aws_sigv4_authorization(
-                method="POST",
-                canonical_uri=path,
-                canonical_query=query,
-                headers=signed_headers,
-                payload=payload_bytes,
-                access_key_id=creds.access_key_id,
-                secret_key=creds.secret_key,
-                region=AWS_REGION,
-                service="iotdevicegateway",
-                amz_date=amz_date,
-                date_stamp=date_stamp,
+
+            iot_data = boto3.client(
+                "iot-data",
+                region_name=AWS_REGION,
+                endpoint_url=IOT_DATA_ENDPOINT,
+                aws_access_key_id=creds.access_key_id,
+                aws_secret_access_key=creds.secret_key,
+                aws_session_token=creds.session_token,
             )
 
-            headers = {
-                "Content-Type": "application/octet-stream",
-                "X-Amz-Date": amz_date,
-                "X-Amz-Security-Token": creds.session_token,
-                "Authorization": authorization,
-            }
-
             try:
-                response = await session.post(
-                    f"{IOT_DATA_ENDPOINT}{path}?{query}",
-                    data=payload_bytes,
-                    headers=headers,
+                await asyncio.to_thread(
+                    iot_data.publish,
+                    topic=topic,
+                    qos=1,
+                    payload=payload_bytes,
                 )
-            except (ClientError, TimeoutError) as err:
+                return
+            except BotoClientError as err:
+                code = err.response.get("Error", {}).get("Code", "UnknownError")
+                message = err.response.get("Error", {}).get("Message", str(err))
+                if code in {"AccessDeniedException", "ForbiddenException", "UnauthorizedException"}:
+                    self._iot_credentials = None
+                    if attempt == 1:
+                        continue
+                    raise MysaAuthError(f"Mysa IoT credentials rejected: {message}") from err
+                raise MysaError(f"Mysa IoT publish failed ({code}): {message}") from err
+            except BotoCoreError as err:
                 raise MysaCannotConnect(f"Unable to publish command to Mysa IoT: {err}") from err
-
-            if response.status == 403 and attempt == 1:
-                self._iot_credentials = None
-                continue
-
-            if response.status == 403:
-                raise MysaAuthError("Mysa IoT credentials rejected")
-
-            if response.status >= 400:
-                body = await response.text()
-                raise MysaError(f"Mysa IoT publish failed ({response.status}): {body}")
-
-            return
 
     async def _async_get_json(self, path: str, *, retried: bool = False) -> dict[str, Any]:
         """Perform authenticated GET request."""
