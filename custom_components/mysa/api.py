@@ -8,7 +8,6 @@ import hmac
 import json
 import logging
 import time
-import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -34,8 +33,8 @@ from .const import (
     COGNITO_USER_POOL_ID,
     FAN_TO_RAW,
     IOT_DATA_ENDPOINT,
-    IOT_DATA_HOST,
     MODE_TO_RAW,
+    REALTIME_TIMEOUT_SECONDS,
 )
 
 _LOGGER = logging.getLogger(__name__)
@@ -152,6 +151,27 @@ class MysaApiClient:
         )
         payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         topic = f"/v1/dev/{device['Id']}/in"
+        await self._async_publish_iot_payload(topic, payload_bytes)
+
+    async def async_start_publishing_device_status(
+        self,
+        device_id: str,
+        timeout_seconds: int = REALTIME_TIMEOUT_SECONDS,
+    ) -> None:
+        """Request the device to publish frequent status updates."""
+        await self._async_ensure_tokens()
+        payload = {
+            "Device": device_id,
+            "MsgType": 11,
+            "Timestamp": int(time.time()),
+            "Timeout": timeout_seconds,
+        }
+        payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        topic = f"/v1/dev/{device_id}/in"
+        await self._async_publish_iot_payload(topic, payload_bytes)
+
+    async def _async_publish_iot_payload(self, topic: str, payload_bytes: bytes) -> None:
+        """Publish payload to a device input topic with auth retry."""
 
         for attempt in (1, 2):
             creds = await self._async_get_iot_credentials()

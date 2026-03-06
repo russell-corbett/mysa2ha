@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from datetime import timedelta
 from typing import Any
 
@@ -10,6 +12,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MysaApiClient, MysaAuthError, MysaCannotConnect, MysaError
+from .const import REALTIME_KEEPALIVE_SECONDS, REALTIME_TIMEOUT_SECONDS
 
 
 class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -27,6 +30,7 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.devices: dict[str, dict[str, Any]] = {}
+        self._last_realtime_keepalive: dict[str, float] = {}
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Mysa."""
@@ -34,6 +38,8 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if not self.devices:
                 devices_response = await self.client.async_get_devices()
                 self.devices = devices_response.get("DevicesObj", {})
+
+            await self._async_refresh_realtime_keepalive()
 
             states_response = await self.client.async_get_device_states()
             states = states_response.get("DeviceStatesObj", {})
@@ -46,3 +52,35 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             raise ConfigEntryAuthFailed from err
         except (MysaCannotConnect, MysaError) as err:
             raise UpdateFailed(f"Error communicating with Mysa API: {err}") from err
+
+    async def _async_refresh_realtime_keepalive(self) -> None:
+        """Keep Mysa device status publishing active for near-realtime updates."""
+        now = time.time()
+        due_device_ids = [
+            device_id
+            for device_id in self.devices
+            if now - self._last_realtime_keepalive.get(device_id, 0) >= REALTIME_KEEPALIVE_SECONDS
+        ]
+
+        if not due_device_ids:
+            return
+
+        results = await asyncio.gather(
+            *(
+                self.client.async_start_publishing_device_status(
+                    device_id=device_id,
+                    timeout_seconds=REALTIME_TIMEOUT_SECONDS,
+                )
+                for device_id in due_device_ids
+            ),
+            return_exceptions=True,
+        )
+
+        for device_id, result in zip(due_device_ids, results, strict=True):
+            if isinstance(result, Exception):
+                if isinstance(result, MysaAuthError):
+                    raise result
+                self.logger.debug("Realtime keepalive failed for %s: %s", device_id, result)
+                continue
+
+            self._last_realtime_keepalive[device_id] = now
