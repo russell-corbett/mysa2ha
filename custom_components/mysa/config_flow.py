@@ -126,11 +126,8 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
         return MysaOptionsFlow(config_entry)
 
 
-class MysaOptionsFlow(config_entries.OptionsFlow):
+class MysaOptionsFlow(config_entries.OptionsFlowWithConfigEntry):
     """Handle options for a Mysa config entry."""
-
-    def __init__(self, config_entry: config_entries.ConfigEntry) -> None:
-        self.config_entry = config_entry
 
     async def async_step_init(self, user_input: dict[str, Any] | None = None) -> FlowResult:
         """Manage options."""
