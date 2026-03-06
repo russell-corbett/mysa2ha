@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -14,6 +15,9 @@ from datetime import UTC, datetime
 from typing import Any
 
 from aiohttp import ClientError
+from botocore.exceptions import BotoCoreError, ClientError as BotoClientError
+import boto3
+from pycognito.aws_srp import AWSSRP
 
 from homeassistant.const import CONTENT_TYPE_JSON
 from homeassistant.core import HomeAssistant
@@ -27,6 +31,7 @@ from .const import (
     COGNITO_IDENTITY_POOL_ID,
     COGNITO_IDP_ENDPOINT,
     COGNITO_LOGIN_KEY,
+    COGNITO_USER_POOL_ID,
     FAN_TO_RAW,
     IOT_DATA_ENDPOINT,
     IOT_DATA_HOST,
@@ -94,18 +99,31 @@ class MysaApiClient:
 
     async def async_login(self) -> None:
         """Authenticate with Cognito username/password."""
-        data = await self._async_cognito_idp(
-            target="AWSCognitoIdentityProviderService.InitiateAuth",
-            payload={
-                "ClientId": COGNITO_CLIENT_ID,
-                "AuthFlow": "USER_PASSWORD_AUTH",
-                "AuthParameters": {
-                    "USERNAME": self.username,
-                    "PASSWORD": self.password,
-                },
-            },
+        try:
+            data = await asyncio.to_thread(self._srp_authenticate_sync)
+        except BotoClientError as err:
+            code = err.response.get("Error", {}).get("Code", "UnknownError")
+            message = err.response.get("Error", {}).get("Message", str(err))
+            if code in _AUTH_ERROR_CODES:
+                raise MysaAuthError(message) from err
+            raise MysaError(f"Cognito SRP auth failed ({code}): {message}") from err
+        except (BotoCoreError, ValueError) as err:
+            raise MysaCannotConnect(f"Cognito SRP auth failed: {err}") from err
+
+        auth_result = data.get("AuthenticationResult", data)
+        self._set_tokens_from_auth_result(auth_result, require_refresh=True)
+
+    def _srp_authenticate_sync(self) -> dict[str, Any]:
+        """Perform SRP auth using AWS Cognito."""
+        cognito_idp = boto3.client("cognito-idp", region_name=AWS_REGION)
+        aws_srp = AWSSRP(
+            username=self.username,
+            password=self.password,
+            pool_id=COGNITO_USER_POOL_ID,
+            client_id=COGNITO_CLIENT_ID,
+            client=cognito_idp,
         )
-        self._set_tokens_from_auth_result(data.get("AuthenticationResult", {}), require_refresh=True)
+        return aws_srp.authenticate_user()
 
     async def async_get_devices(self) -> dict[str, Any]:
         """Get all devices."""
