@@ -1,0 +1,16 @@
+{
+  "domain": "mysa",
+  "name": "Mysa",
+  "documentation": "https://www.home-assistant.io/integrations/mysa",
+  "issue_tracker": "https://github.com/russellcorbett/mysa2ha/issues",
+  "codeowners": [
+    "@russellcorbett"
+  ],
+  "config_flow": true,
+  "integration_type": "hub",
+  "iot_class": "cloud_polling",
+  "requirements": [],
+  "loggers": [
+    "custom_components.mysa"
+  ]
+}
