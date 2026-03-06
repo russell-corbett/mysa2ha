@@ -186,7 +186,10 @@ class MysaApiClient:
             aws_secret_access_key=creds.secret_key,
             aws_session_token=creds.session_token,
         )
+        # Publish on both forms because some clients/topics are configured without a leading slash.
         iot_data.publish(topic=topic, qos=1, payload=payload)
+        if topic.startswith("/"):
+            iot_data.publish(topic=topic[1:], qos=1, payload=payload)
 
     async def _async_get_json(self, path: str, *, retried: bool = False) -> dict[str, Any]:
         """Perform authenticated GET request."""

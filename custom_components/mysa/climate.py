@@ -62,6 +62,7 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self._attr_target_temperature_step = 0.5
 
         is_ac = str(device.get("Model", "")).startswith("AC")
+        self._is_ac = is_ac
         self._attr_hvac_modes = HA_AC_MODES if is_ac else HA_HEAT_ONLY_MODES
 
         self._attr_supported_features = ClimateEntityFeature.TARGET_TEMPERATURE
@@ -159,7 +160,12 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self._pending_target_temperature = setpoint
         self.async_write_ha_state()
 
-        await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint)
+        mode = None
+        if not self._is_ac and self.hvac_mode == HVACMode.OFF:
+            # Baseboard devices can ignore setpoint changes while off.
+            mode = "heat"
+
+        await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint, mode=mode)
         self.hass.async_create_task(self._async_delayed_refresh())
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
