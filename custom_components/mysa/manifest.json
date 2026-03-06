@@ -1,7 +1,7 @@
 {
   "domain": "mysa",
   "name": "Mysa",
-  "version": "0.2.7",
+  "version": "0.2.8",
   "documentation": "https://www.home-assistant.io/integrations/mysa",
   "issue_tracker": "https://github.com/russellcorbett/mysa2ha/issues",
   "codeowners": [

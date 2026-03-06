@@ -11,7 +11,6 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 
-from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
 from .const import (
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
@@ -40,8 +39,10 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             await self.async_set_unique_id(username)
             self._abort_if_unique_id_configured()
 
-            client = MysaApiClient(self.hass, username=username, password=password)
             try:
+                from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
+
+                client = MysaApiClient(self.hass, username=username, password=password)
                 await client.async_login()
             except MysaAuthError:
                 errors["base"] = "invalid_auth"
@@ -89,8 +90,10 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             username = self._reauth_entry.data[CONF_USERNAME]
             password = user_input[CONF_PASSWORD]
 
-            client = MysaApiClient(self.hass, username=username, password=password)
             try:
+                from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
+
+                client = MysaApiClient(self.hass, username=username, password=password)
                 await client.async_login()
             except MysaAuthError:
                 errors["base"] = "invalid_auth"
