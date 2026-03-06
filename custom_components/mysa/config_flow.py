@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 import voluptuous as vol
@@ -18,6 +19,8 @@ from .const import (
     MAX_POLL_INTERVAL,
     MIN_POLL_INTERVAL,
 )
+
+_LOGGER = logging.getLogger(__name__)
 
 
 class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -43,8 +46,10 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except MysaAuthError:
                 errors["base"] = "invalid_auth"
             except MysaCannotConnect:
+                _LOGGER.exception("Cannot connect to Mysa during initial config")
                 errors["base"] = "cannot_connect"
             except Exception:
+                _LOGGER.exception("Unexpected error during Mysa initial config")
                 errors["base"] = "unknown"
             else:
                 return self.async_create_entry(
@@ -90,8 +95,10 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except MysaAuthError:
                 errors["base"] = "invalid_auth"
             except MysaCannotConnect:
+                _LOGGER.exception("Cannot connect to Mysa during reauth")
                 errors["base"] = "cannot_connect"
             except Exception:
+                _LOGGER.exception("Unexpected error during Mysa reauth")
                 errors["base"] = "unknown"
             else:
                 self.hass.config_entries.async_update_entry(
