@@ -190,8 +190,9 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
 
     async def _async_delayed_refresh(self) -> None:
         """Refresh after a short delay to allow cloud state propagation."""
-        await asyncio.sleep(4)
-        await self.coordinator.async_request_refresh()
+        for _ in range(3):
+            await asyncio.sleep(2)
+            await self.coordinator.async_request_refresh()
         self._pending_target_temperature = None
         self._pending_hvac_mode = None
         self._pending_fan_mode = None
