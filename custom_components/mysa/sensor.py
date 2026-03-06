@@ -99,6 +99,15 @@ class MysaSensorEntity(MysaEntity, SensorEntity):
             return None
 
         if self.entity_description.key == "power":
+            mode_obj = self.state_obj.get("TstatMode")
+            duty_obj = self.state_obj.get("Duty")
+            mode_value = mode_obj.get("v") if mode_obj else None
+            duty_value = duty_obj.get("v") if duty_obj else None
+
+            # Mysa's polled Current can remain non-zero while idle; gate power on actual heating/cooling activity.
+            if mode_value == 1 or (duty_value is not None and float(duty_value) <= 0):
+                return 0.0
+
             voltage_obj = self.state_obj.get("Voltage")
             if voltage_obj and voltage_obj.get("v") is not None:
                 return round(float(value) * float(voltage_obj["v"]), 2)
