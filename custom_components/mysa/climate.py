@@ -164,9 +164,16 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         if not self._is_ac and self.hvac_mode == HVACMode.OFF:
             # Baseboard devices can ignore setpoint changes while off.
             mode = "heat"
+            self._pending_hvac_mode = HVACMode.HEAT
 
         await self.coordinator.client.async_set_device_state(self._device, setpoint=setpoint, mode=mode)
-        self.hass.async_create_task(self._async_delayed_refresh())
+        self.hass.async_create_task(
+            self._async_delayed_refresh(
+                expected_setpoint=setpoint,
+                expected_mode=HVACMode.HEAT if mode == "heat" else None,
+                resend_command={"setpoint": setpoint, "mode": mode},
+            )
+        )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
         """Set HVAC mode."""
@@ -178,7 +185,12 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self.async_write_ha_state()
 
         await self.coordinator.client.async_set_device_state(self._device, mode=mysa_mode)
-        self.hass.async_create_task(self._async_delayed_refresh())
+        self.hass.async_create_task(
+            self._async_delayed_refresh(
+                expected_mode=hvac_mode,
+                resend_command={"mode": mysa_mode},
+            )
+        )
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
         """Set fan mode."""
@@ -186,17 +198,65 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self.async_write_ha_state()
 
         await self.coordinator.client.async_set_device_state(self._device, fan_speed=fan_mode)
-        self.hass.async_create_task(self._async_delayed_refresh())
+        self.hass.async_create_task(
+            self._async_delayed_refresh(
+                expected_fan_mode=fan_mode,
+                resend_command={"fan_speed": fan_mode},
+            )
+        )
 
-    async def _async_delayed_refresh(self) -> None:
-        """Refresh after a short delay to allow cloud state propagation."""
-        for _ in range(3):
+    async def _async_delayed_refresh(
+        self,
+        *,
+        expected_setpoint: float | None = None,
+        expected_mode: HVACMode | None = None,
+        expected_fan_mode: str | None = None,
+        resend_command: dict[str, Any] | None = None,
+    ) -> None:
+        """Refresh until command is reflected or timeout occurs."""
+        resent = False
+        for attempt in range(6):
             await asyncio.sleep(2)
             await self.coordinator.async_request_refresh()
+            if self._is_expected_state_applied(expected_setpoint, expected_mode, expected_fan_mode):
+                break
+
+            # Some Mysa devices ignore an occasional command; retry once if needed.
+            if attempt == 2 and resend_command and not resent:
+                await self.coordinator.client.async_set_device_state(self._device, **resend_command)
+                resent = True
+
         self._pending_target_temperature = None
         self._pending_hvac_mode = None
         self._pending_fan_mode = None
         self.async_write_ha_state()
+
+    def _is_expected_state_applied(
+        self,
+        expected_setpoint: float | None,
+        expected_mode: HVACMode | None,
+        expected_fan_mode: str | None,
+    ) -> bool:
+        """Check if the coordinator state reflects the expected command result."""
+        if expected_setpoint is not None:
+            current_setpoint = _state_value(self.state_obj, "SetPoint")
+            if current_setpoint is None or abs(current_setpoint - expected_setpoint) > 0.26:
+                return False
+
+        if expected_mode is not None:
+            raw_mode = _state_value(self.state_obj, "TstatMode")
+            if raw_mode is None:
+                return False
+            reported_mode = MYSA_TO_HVAC.get(RAW_TO_MODE.get(int(raw_mode), ""))
+            if reported_mode != expected_mode:
+                return False
+
+        if expected_fan_mode is not None:
+            raw_fan = _state_value(self.state_obj, "FanSpeed")
+            if raw_fan is None or RAW_TO_FAN.get(int(raw_fan)) != expected_fan_mode:
+                return False
+
+        return True
 
 
 def _state_value(state_obj: dict[str, Any], key: str) -> float | None:
