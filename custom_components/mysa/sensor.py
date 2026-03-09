@@ -155,16 +155,22 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
         self._total_energy_wh: float = 0.0
         self._last_power: float | None = None
         self._last_update: datetime.datetime | None = None
+        self._restored: bool = False
 
     async def async_added_to_hass(self) -> None:
         """Restore last known energy on startup."""
         await super().async_added_to_hass()
         if (last := await self.async_get_last_sensor_data()) is not None:
-            self._total_energy_wh = float(last.native_value or 0)
+            self._total_energy_wh = float(last.native_value) if last.native_value is not None else 0.0
+        self._restored = True
+        self.async_write_ha_state()
 
     @callback
     def _handle_coordinator_update(self) -> None:
         """Integrate power into energy on each coordinator update."""
+        if not self._restored:
+            return
+
         now = dt_util.utcnow()
         power = _get_gated_power_watts(self.state_obj)
 
@@ -175,7 +181,6 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
             self._last_power = power
             self._last_update = now
         else:
-            # Device offline — reset timestamp so the offline gap isn't integrated on reconnect.
             self._last_update = None
 
         self.async_write_ha_state()
