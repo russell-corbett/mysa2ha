@@ -24,7 +24,11 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     """Coordinate Mysa API polling."""
 
     def __init__(
-        self, hass: HomeAssistant, client: MysaApiClient, update_interval: timedelta
+        self,
+        hass: HomeAssistant,
+        client: MysaApiClient,
+        update_interval: timedelta,
+        selected_device_ids: set[str] | None = None,
     ) -> None:
         """Initialize coordinator."""
         super().__init__(
@@ -35,6 +39,7 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         )
         self.client = client
         self.devices: dict[str, dict[str, Any]] = {}
+        self._selected_device_ids = selected_device_ids
         self._last_realtime_keepalive: dict[str, float] = {}
         self._last_device_fetch: float = 0.0
 
@@ -47,13 +52,21 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
                 self.devices = devices_response.get("DevicesObj", {})
                 self._last_device_fetch = now
 
+            # Apply device selection filter — only expose devices the user has selected.
+            if self._selected_device_ids is not None:
+                active_devices = {
+                    k: v for k, v in self.devices.items() if k in self._selected_device_ids
+                }
+            else:
+                active_devices = self.devices
+
             await self._async_refresh_realtime_keepalive()
 
             states_response = await self.client.async_get_device_states()
             states = states_response.get("DeviceStatesObj", {})
 
             return {
-                "devices": self.devices,
+                "devices": active_devices,
                 "states": states,
             }
         except MysaAuthError as err:
@@ -64,10 +77,14 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
     async def _async_refresh_realtime_keepalive(self) -> None:
         """Keep Mysa device status publishing active for near-realtime updates."""
         now = time.time()
+        active_ids = (
+            self._selected_device_ids if self._selected_device_ids is not None else set(self.devices)
+        )
         due_device_ids = [
             device_id
-            for device_id in self.devices
-            if now - self._last_realtime_keepalive.get(device_id, 0) >= REALTIME_KEEPALIVE_SECONDS
+            for device_id in active_ids
+            if device_id in self.devices
+            and now - self._last_realtime_keepalive.get(device_id, 0) >= REALTIME_KEEPALIVE_SECONDS
         ]
 
         if not due_device_ids:

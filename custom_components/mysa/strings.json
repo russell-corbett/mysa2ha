@@ -10,6 +10,13 @@
           "password": "Password"
         }
       },
+      "select_devices": {
+        "title": "Select thermostats",
+        "description": "Choose which Mysa thermostats to add to Home Assistant. You can change this later from the integration's Configure page.",
+        "data": {
+          "selected_devices": "Thermostats"
+        }
+      },
       "reauth_confirm": {
         "title": "Reauthenticate Mysa",
         "description": "Your Mysa credentials are no longer valid. Enter your password again.",
@@ -21,6 +28,7 @@
     "error": {
       "invalid_auth": "Invalid authentication",
       "cannot_connect": "Cannot connect",
+      "no_devices_selected": "Select at least one thermostat",
       "unknown": "Unexpected error"
     },
     "abort": {
@@ -32,8 +40,10 @@
     "step": {
       "init": {
         "title": "Mysa options",
+        "description": "The device list is refreshed from Mysa every hour. If a newly added thermostat is missing, wait a moment and reopen this page.",
         "data": {
-          "poll_interval": "Poll interval (seconds)"
+          "poll_interval": "Poll interval (seconds)",
+          "selected_devices": "Active thermostats"
         }
       }
     }

@@ -11,7 +11,7 @@ from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
 
 from .api import MysaApiClient, MysaAuthError, MysaCannotConnect, MysaError
-from .const import CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL, PLATFORMS
+from .const import CONF_POLL_INTERVAL, CONF_SELECTED_DEVICES, DEFAULT_POLL_INTERVAL, PLATFORMS
 from .coordinator import MysaDataUpdateCoordinator
 
 
@@ -41,10 +41,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: MysaConfigEntry) -> bool
         raise ConfigEntryNotReady(f"Unable to connect to Mysa: {err}") from err
 
     poll_seconds = entry.options.get(CONF_POLL_INTERVAL, DEFAULT_POLL_INTERVAL)
+    raw_selected = entry.options.get(CONF_SELECTED_DEVICES)
+    selected_device_ids = set(raw_selected) if raw_selected is not None else None
     coordinator = MysaDataUpdateCoordinator(
         hass=hass,
         client=client,
         update_interval=timedelta(seconds=poll_seconds),
+        selected_device_ids=selected_device_ids,
     )
 
     try:
