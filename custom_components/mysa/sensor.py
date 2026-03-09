@@ -75,6 +75,36 @@ async def async_setup_entry(
     async_add_entities(entities)
 
 
+def _get_gated_power_watts(state_obj: dict[str, Any]) -> float | None:
+    """Return gated power in watts, or None if unavailable.
+
+    Returns 0.0 when the device is off or idle (duty <= 0).
+    Returns None when voltage data is missing (can't compute watts from amps alone).
+    """
+    current_obj = state_obj.get("Current")
+    if current_obj is None:
+        return None
+    value = current_obj.get("v")
+    if value is None:
+        return None
+
+    mode_obj = state_obj.get("TstatMode")
+    duty_obj = state_obj.get("Duty")
+    mode_value = mode_obj.get("v") if mode_obj else None
+    duty_value = duty_obj.get("v") if duty_obj else None
+
+    # Gate power on actual heating/cooling activity; polled Current can remain non-zero while idle.
+    if mode_value == 1 or (duty_value is not None and float(duty_value) <= 0):
+        return 0.0
+
+    voltage_obj = state_obj.get("Voltage")
+    if voltage_obj and voltage_obj.get("v") is not None:
+        return float(value) * float(voltage_obj["v"])
+
+    # Voltage unavailable — cannot derive watts from amps alone.
+    return None
+
+
 class MysaSensorEntity(MysaEntity, SensorEntity):
     """Representation of Mysa numeric sensor."""
 
@@ -103,18 +133,8 @@ class MysaSensorEntity(MysaEntity, SensorEntity):
             return None
 
         if self.entity_description.key == "power":
-            mode_obj = self.state_obj.get("TstatMode")
-            duty_obj = self.state_obj.get("Duty")
-            mode_value = mode_obj.get("v") if mode_obj else None
-            duty_value = duty_obj.get("v") if duty_obj else None
-
-            # Mysa's polled Current can remain non-zero while idle; gate power on actual heating/cooling activity.
-            if mode_value == 1 or (duty_value is not None and float(duty_value) <= 0):
-                return 0.0
-
-            voltage_obj = self.state_obj.get("Voltage")
-            if voltage_obj and voltage_obj.get("v") is not None:
-                return round(float(value) * float(voltage_obj["v"]), 2)
+            watts = _get_gated_power_watts(self.state_obj)
+            return round(watts, 2) if watts is not None else None
 
         return float(value)
 
@@ -142,47 +162,21 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
         if (last := await self.async_get_last_sensor_data()) is not None:
             self._total_energy_wh = float(last.native_value or 0)
 
-    def _get_power(self) -> float | None:
-        """Return current gated power in watts (same logic as power sensor)."""
-        state = self.state_obj
-        current_obj = state.get("Current")
-        if current_obj is None:
-            return None
-        value = current_obj.get("v")
-        if value is None:
-            return None
-
-        mode_obj = state.get("TstatMode")
-        duty_obj = state.get("Duty")
-        mode_value = mode_obj.get("v") if mode_obj else None
-        duty_value = duty_obj.get("v") if duty_obj else None
-
-        if mode_value == 1 or (duty_value is not None and float(duty_value) <= 0):
-            return 0.0
-
-        voltage_obj = state.get("Voltage")
-        if voltage_obj and voltage_obj.get("v") is not None:
-            return float(value) * float(voltage_obj["v"])
-
-        return float(value)
-
     @callback
     def _handle_coordinator_update(self) -> None:
         """Integrate power into energy on each coordinator update."""
         now = dt_util.utcnow()
-        power = self._get_power()
-
-        if (
-            power is not None
-            and self._last_power is not None
-            and self._last_update is not None
-        ):
-            dt_hours = (now - self._last_update).total_seconds() / 3600
-            self._total_energy_wh += (self._last_power + power) / 2 * dt_hours
+        power = _get_gated_power_watts(self.state_obj)
 
         if power is not None:
+            if self._last_power is not None and self._last_update is not None:
+                dt_hours = (now - self._last_update).total_seconds() / 3600
+                self._total_energy_wh += (self._last_power + power) / 2 * dt_hours
             self._last_power = power
             self._last_update = now
+        else:
+            # Device offline — reset timestamp so the offline gap isn't integrated on reconnect.
+            self._last_update = None
 
         self.async_write_ha_state()
 

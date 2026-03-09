@@ -47,7 +47,7 @@ class MysaEntity(CoordinatorEntity[MysaDataUpdateCoordinator]):
 
         state = self.state_obj
         connected = state.get("Connected", {}).get("v")
-        if connected is False:
+        if connected is not None and not connected:
             return False
 
         return bool(state)

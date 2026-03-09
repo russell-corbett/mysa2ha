@@ -9,8 +9,8 @@ from typing import Any
 
 from homeassistant.components.climate import ClimateEntity
 from homeassistant.components.climate.const import ClimateEntityFeature, HVACAction, HVACMode
-from homeassistant.core import HomeAssistant
 from homeassistant.const import UnitOfTemperature
+from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 
 from . import MysaConfigEntry
@@ -84,6 +84,7 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         self._pending_target_temperature: float | None = None
         self._pending_hvac_mode: HVACMode | None = None
         self._pending_fan_mode: str | None = None
+        self._refresh_task: asyncio.Task | None = None
 
     @property
     def current_temperature(self) -> float | None:
@@ -134,7 +135,7 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
             return HVACAction.COOLING if duty_value > 0 else HVACAction.IDLE
         if mode == HVACMode.FAN_ONLY:
             return HVACAction.FAN
-        return HVACAction.IDLE if duty_value <= 0 else None
+        return HVACAction.IDLE if duty_value <= 0 else HVACAction.COOLING
 
     @property
     def fan_mode(self) -> str | None:
@@ -152,8 +153,6 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         requested_temperature = float(temperature)
 
         setpoint = requested_temperature
-        if self.hass.config.units.temperature_unit == UnitOfTemperature.FAHRENHEIT:
-            setpoint = (setpoint - 32.0) * 5.0 / 9.0
 
         # Mysa setpoints are in 0.5C increments.
         setpoint = round(setpoint * 2) / 2
@@ -202,13 +201,11 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
                 "mode": mode,
             },
         )
-        self.hass.async_create_task(
-            self._async_delayed_refresh(
-                expected_setpoint=setpoint,
-                expected_mode=HVACMode.HEAT if mode == "heat" else None,
-                resend_command={"setpoint": setpoint, "mode": mode},
-                command_id=command_id,
-            )
+        self._schedule_delayed_refresh(
+            expected_setpoint=setpoint,
+            expected_mode=HVACMode.HEAT if mode == "heat" else None,
+            resend_command={"setpoint": setpoint, "mode": mode},
+            command_id=command_id,
         )
 
     async def async_set_hvac_mode(self, hvac_mode: HVACMode) -> None:
@@ -232,12 +229,10 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
                 "mode": str(hvac_mode),
             },
         )
-        self.hass.async_create_task(
-            self._async_delayed_refresh(
-                expected_mode=hvac_mode,
-                resend_command={"mode": mysa_mode},
-                command_id=command_id,
-            )
+        self._schedule_delayed_refresh(
+            expected_mode=hvac_mode,
+            resend_command={"mode": mysa_mode},
+            command_id=command_id,
         )
 
     async def async_set_fan_mode(self, fan_mode: str) -> None:
@@ -257,12 +252,18 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
                 "fan_mode": fan_mode,
             },
         )
-        self.hass.async_create_task(
-            self._async_delayed_refresh(
-                expected_fan_mode=fan_mode,
-                resend_command={"fan_speed": fan_mode},
-                command_id=command_id,
-            )
+        self._schedule_delayed_refresh(
+            expected_fan_mode=fan_mode,
+            resend_command={"fan_speed": fan_mode},
+            command_id=command_id,
+        )
+
+    def _schedule_delayed_refresh(self, **kwargs: Any) -> None:
+        """Cancel any in-flight refresh task and schedule a new one."""
+        if self._refresh_task is not None:
+            self._refresh_task.cancel()
+        self._refresh_task = self.hass.async_create_task(
+            self._async_delayed_refresh(**kwargs)
         )
 
     async def _async_delayed_refresh(
@@ -275,77 +276,80 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         command_id: str = "unknown",
     ) -> None:
         """Refresh until command is reflected or timeout occurs."""
-        resent = False
-        for attempt in range(6):
-            await asyncio.sleep(2)
-            await self.coordinator.async_request_refresh()
-            current_setpoint = _state_value(self.state_obj, "SetPoint")
-            current_mode = self.hvac_mode
-            current_fan = self.fan_mode
-            _LOGGER.debug(
-                "Mysa command %s verify attempt=%d expected_setpoint=%s expected_mode=%s expected_fan=%s current_setpoint=%s current_mode=%s current_fan=%s",
-                command_id,
-                attempt + 1,
-                expected_setpoint,
-                expected_mode,
-                expected_fan_mode,
-                current_setpoint,
-                current_mode,
-                current_fan,
-            )
-            if self._is_expected_state_applied(expected_setpoint, expected_mode, expected_fan_mode):
+        try:
+            resent = False
+            for attempt in range(6):
+                await asyncio.sleep(2)
+                await self.coordinator.async_request_refresh()
+                current_setpoint = _state_value(self.state_obj, "SetPoint")
+                current_mode = self.hvac_mode
+                current_fan = self.fan_mode
+                _LOGGER.debug(
+                    "Mysa command %s verify attempt=%d expected_setpoint=%s expected_mode=%s expected_fan=%s current_setpoint=%s current_mode=%s current_fan=%s",
+                    command_id,
+                    attempt + 1,
+                    expected_setpoint,
+                    expected_mode,
+                    expected_fan_mode,
+                    current_setpoint,
+                    current_mode,
+                    current_fan,
+                )
+                if self._is_expected_state_applied(expected_setpoint, expected_mode, expected_fan_mode):
+                    self.hass.bus.async_fire(
+                        "mysa_command_debug",
+                        {
+                            "command_id": command_id,
+                            "device_id": self._device_id,
+                            "status": "applied",
+                            "attempt": attempt + 1,
+                            "current_setpoint": current_setpoint,
+                            "current_mode": str(current_mode) if current_mode is not None else None,
+                            "current_fan_mode": current_fan,
+                        },
+                    )
+                    break
+
+                # Some Mysa devices ignore an occasional command; retry once if needed.
+                if attempt == 2 and resend_command and not resent:
+                    _LOGGER.debug("Mysa command %s retrying payload=%s", command_id, resend_command)
+                    await self.coordinator.client.async_set_device_state(self._device, **resend_command)
+                    resent = True
+                    self.hass.bus.async_fire(
+                        "mysa_command_debug",
+                        {
+                            "command_id": command_id,
+                            "device_id": self._device_id,
+                            "status": "retry_sent",
+                            "payload": resend_command,
+                        },
+                    )
+            else:
+                _LOGGER.warning(
+                    "Mysa command %s not applied after verification window; state may bounce",
+                    command_id,
+                )
                 self.hass.bus.async_fire(
                     "mysa_command_debug",
                     {
                         "command_id": command_id,
                         "device_id": self._device_id,
-                        "status": "applied",
-                        "attempt": attempt + 1,
-                        "current_setpoint": current_setpoint,
-                        "current_mode": str(current_mode) if current_mode is not None else None,
-                        "current_fan_mode": current_fan,
+                        "status": "not_applied",
+                        "expected_setpoint": expected_setpoint,
+                        "expected_mode": str(expected_mode) if expected_mode is not None else None,
+                        "expected_fan_mode": expected_fan_mode,
+                        "current_setpoint": _state_value(self.state_obj, "SetPoint"),
+                        "current_mode": str(self.hvac_mode) if self.hvac_mode is not None else None,
+                        "current_fan_mode": self.fan_mode,
                     },
                 )
-                break
 
-            # Some Mysa devices ignore an occasional command; retry once if needed.
-            if attempt == 2 and resend_command and not resent:
-                _LOGGER.debug("Mysa command %s retrying payload=%s", command_id, resend_command)
-                await self.coordinator.client.async_set_device_state(self._device, **resend_command)
-                resent = True
-                self.hass.bus.async_fire(
-                    "mysa_command_debug",
-                    {
-                        "command_id": command_id,
-                        "device_id": self._device_id,
-                        "status": "retry_sent",
-                        "payload": resend_command,
-                    },
-                )
-        else:
-            _LOGGER.warning(
-                "Mysa command %s not applied after verification window; state may bounce",
-                command_id,
-            )
-            self.hass.bus.async_fire(
-                "mysa_command_debug",
-                {
-                    "command_id": command_id,
-                    "device_id": self._device_id,
-                    "status": "not_applied",
-                    "expected_setpoint": expected_setpoint,
-                    "expected_mode": str(expected_mode) if expected_mode is not None else None,
-                    "expected_fan_mode": expected_fan_mode,
-                    "current_setpoint": _state_value(self.state_obj, "SetPoint"),
-                    "current_mode": str(self.hvac_mode) if self.hvac_mode is not None else None,
-                    "current_fan_mode": self.fan_mode,
-                },
-            )
-
-        self._pending_target_temperature = None
-        self._pending_hvac_mode = None
-        self._pending_fan_mode = None
-        self.async_write_ha_state()
+            self._pending_target_temperature = None
+            self._pending_hvac_mode = None
+            self._pending_fan_mode = None
+            self.async_write_ha_state()
+        except asyncio.CancelledError:
+            raise  # Don't clear pending state — a newer command has already set new values.
 
     def _is_expected_state_applied(
         self,

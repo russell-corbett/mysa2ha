@@ -1,4 +1,4 @@
-# mysa
+# mysa2ha
 
 Native Home Assistant integration for Mysa thermostats.
 
@@ -31,3 +31,8 @@ Native Home Assistant integration for Mysa thermostats.
 
 - This integration uses undocumented Mysa cloud APIs and AWS IoT commands.
 - API compatibility may break if Mysa changes backend behavior.
+
+## Acknowledgments
+
+- [bourquep/mysa2mqtt](https://github.com/bourquep/mysa2mqtt)
+- [bourquep/mysa2ha](https://github.com/bourquep/mqtt2ha)

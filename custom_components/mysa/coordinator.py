@@ -3,16 +3,21 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from datetime import timedelta
 from typing import Any
 
 from homeassistant.core import HomeAssistant
+
+_LOGGER = logging.getLogger(__name__)
 from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .api import MysaApiClient, MysaAuthError, MysaCannotConnect, MysaError
 from .const import REALTIME_KEEPALIVE_SECONDS, REALTIME_TIMEOUT_SECONDS
+
+DEVICE_REFRESH_SECONDS = 3600  # Re-fetch device list hourly to pick up newly added devices.
 
 
 class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
@@ -24,20 +29,23 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
         """Initialize coordinator."""
         super().__init__(
             hass,
-            logger=client.logger,
+            logger=_LOGGER,
             name="mysa",
             update_interval=update_interval,
         )
         self.client = client
         self.devices: dict[str, dict[str, Any]] = {}
         self._last_realtime_keepalive: dict[str, float] = {}
+        self._last_device_fetch: float = 0.0
 
     async def _async_update_data(self) -> dict[str, Any]:
         """Fetch data from Mysa."""
         try:
-            if not self.devices:
+            now = time.time()
+            if not self.devices or now - self._last_device_fetch >= DEVICE_REFRESH_SECONDS:
                 devices_response = await self.client.async_get_devices()
                 self.devices = devices_response.get("DevicesObj", {})
+                self._last_device_fetch = now
 
             await self._async_refresh_realtime_keepalive()
 
@@ -80,7 +88,7 @@ class MysaDataUpdateCoordinator(DataUpdateCoordinator[dict[str, Any]]):
             if isinstance(result, Exception):
                 if isinstance(result, MysaAuthError):
                     raise result
-                self.logger.debug("Realtime keepalive failed for %s: %s", device_id, result)
+                _LOGGER.debug("Realtime keepalive failed for %s: %s", device_id, result)
                 continue
 
             self._last_realtime_keepalive[device_id] = now

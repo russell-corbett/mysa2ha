@@ -3,14 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
 import json
 import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
 
 from aiohttp import ClientError
@@ -90,6 +88,7 @@ class MysaApiClient:
         self._tokens: SessionTokens | None = None
         self._identity_id: str | None = None
         self._iot_credentials: IotCredentials | None = None
+        self._iot_client: Any | None = None
 
     @property
     def has_tokens(self) -> bool:
@@ -198,6 +197,7 @@ class MysaApiClient:
                 )
                 if code in {"AccessDeniedException", "ForbiddenException", "UnauthorizedException"}:
                     self._iot_credentials = None
+                    self._iot_client = None
                     if attempt == 1:
                         continue
                     raise MysaAuthError(f"Mysa IoT credentials rejected: {message}") from err
@@ -207,23 +207,26 @@ class MysaApiClient:
 
     def _publish_iot_command_sync(self, topic: str, payload: bytes, creds: IotCredentials) -> None:
         """Publish command to AWS IoT (blocking, run in worker thread)."""
-        iot_data = boto3.client(
-            "iot-data",
-            region_name=AWS_REGION,
-            endpoint_url=IOT_DATA_ENDPOINT,
-            aws_access_key_id=creds.access_key_id,
-            aws_secret_access_key=creds.secret_key,
-            aws_session_token=creds.session_token,
-        )
+        # Reuse the cached client as long as credentials haven't changed.
+        if self._iot_client is None or self._iot_credentials is not creds:
+            self._iot_client = boto3.client(
+                "iot-data",
+                region_name=AWS_REGION,
+                endpoint_url=IOT_DATA_ENDPOINT,
+                aws_access_key_id=creds.access_key_id,
+                aws_secret_access_key=creds.secret_key,
+                aws_session_token=creds.session_token,
+            )
         # Publish on both forms because some clients/topics are configured without a leading slash.
-        iot_data.publish(topic=topic, qos=1, payload=payload)
+        self._iot_client.publish(topic=topic, qos=1, payload=payload)
         if topic.startswith("/"):
-            iot_data.publish(topic=topic[1:], qos=1, payload=payload)
+            self._iot_client.publish(topic=topic[1:], qos=1, payload=payload)
 
     async def _async_get_json(self, path: str, *, retried: bool = False) -> dict[str, Any]:
         """Perform authenticated GET request."""
         await self._async_ensure_tokens()
-        assert self._tokens is not None
+        if self._tokens is None:
+            raise MysaError("No authentication tokens available")
 
         session = async_get_clientsession(self.hass)
         try:
@@ -279,7 +282,8 @@ class MysaApiClient:
     async def _async_get_iot_credentials(self) -> IotCredentials:
         """Get temporary IAM credentials via Cognito identity pool."""
         await self._async_ensure_tokens()
-        assert self._tokens is not None
+        if self._tokens is None:
+            raise MysaError("No authentication tokens available")
 
         if self._iot_credentials and self._iot_credentials.expires_at > time.time() + 60:
             return self._iot_credentials
@@ -377,6 +381,7 @@ class MysaApiClient:
             expires_at=time.time() + expires_in - 60,
         )
         self._iot_credentials = None
+        self._iot_client = None
 
     @staticmethod
     def _device_type_from_model(model: str) -> int:
@@ -446,79 +451,6 @@ def _parse_aws_datetime(raw: str | float | int) -> float:
     if raw.endswith("Z"):
         raw = raw[:-1] + "+00:00"
     return datetime.fromisoformat(raw).timestamp()
-
-
-def _aws_timestamps() -> tuple[str, str]:
-    """Return AWS timestamp pair (amz_date, date_stamp)."""
-    now = datetime.now(UTC)
-    return now.strftime("%Y%m%dT%H%M%SZ"), now.strftime("%Y%m%d")
-
-
-def _aws_sigv4_authorization(
-    *,
-    method: str,
-    canonical_uri: str,
-    canonical_query: str,
-    headers: dict[str, str],
-    payload: bytes,
-    access_key_id: str,
-    secret_key: str,
-    region: str,
-    service: str,
-    amz_date: str,
-    date_stamp: str,
-) -> str:
-    """Build SigV4 Authorization header."""
-    normalized_headers = {k.lower(): v.strip() for k, v in headers.items()}
-    signed_header_names = sorted(normalized_headers)
-    canonical_headers = "".join(f"{name}:{normalized_headers[name]}\n" for name in signed_header_names)
-    signed_headers = ";".join(signed_header_names)
-
-    payload_hash = hashlib.sha256(payload).hexdigest()
-
-    canonical_request = "\n".join(
-        [
-            method,
-            canonical_uri,
-            canonical_query,
-            canonical_headers,
-            signed_headers,
-            payload_hash,
-        ]
-    )
-
-    credential_scope = f"{date_stamp}/{region}/{service}/aws4_request"
-    string_to_sign = "\n".join(
-        [
-            "AWS4-HMAC-SHA256",
-            amz_date,
-            credential_scope,
-            hashlib.sha256(canonical_request.encode("utf-8")).hexdigest(),
-        ]
-    )
-
-    signing_key = _aws_signing_key(secret_key, date_stamp, region, service)
-    signature = hmac.new(signing_key, string_to_sign.encode("utf-8"), hashlib.sha256).hexdigest()
-
-    return (
-        "AWS4-HMAC-SHA256 "
-        f"Credential={access_key_id}/{credential_scope}, "
-        f"SignedHeaders={signed_headers}, "
-        f"Signature={signature}"
-    )
-
-
-def _aws_signing_key(secret_key: str, date_stamp: str, region: str, service: str) -> bytes:
-    """Derive AWS SigV4 signing key."""
-    k_date = _hmac_sha256(("AWS4" + secret_key).encode("utf-8"), date_stamp)
-    k_region = _hmac_sha256(k_date, region)
-    k_service = _hmac_sha256(k_region, service)
-    return _hmac_sha256(k_service, "aws4_request")
-
-
-def _hmac_sha256(key: bytes, value: str) -> bytes:
-    """Compute HMAC-SHA256."""
-    return hmac.new(key, value.encode("utf-8"), hashlib.sha256).digest()
 
 
 def _strip_none(value: Any) -> Any:

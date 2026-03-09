@@ -11,6 +11,7 @@ from homeassistant import config_entries
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.data_entry_flow import FlowResult
 
+from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
 from .const import (
     CONF_POLL_INTERVAL,
     DEFAULT_POLL_INTERVAL,
@@ -40,8 +41,6 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             self._abort_if_unique_id_configured()
 
             try:
-                from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
-
                 client = MysaApiClient(self.hass, username=username, password=password)
                 await client.async_login()
             except MysaAuthError:
@@ -75,9 +74,8 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             errors=errors,
         )
 
-    async def async_step_reauth(self, entry_data: dict[str, Any]) -> FlowResult:
+    async def async_step_reauth(self, _entry_data: dict[str, Any]) -> FlowResult:
         """Start reauth flow."""
-        _ = entry_data
         self._reauth_entry = self.hass.config_entries.async_get_entry(self.context["entry_id"])
         return await self.async_step_reauth_confirm()
 
@@ -91,8 +89,6 @@ class MysaConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             password = user_input[CONF_PASSWORD]
 
             try:
-                from .api import MysaApiClient, MysaAuthError, MysaCannotConnect
-
                 client = MysaApiClient(self.hass, username=username, password=password)
                 await client.async_login()
             except MysaAuthError:
