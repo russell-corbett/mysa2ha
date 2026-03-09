@@ -74,12 +74,18 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
             self._attr_supported_features |= ClimateEntityFeature.FAN_MODE
             self._attr_fan_modes = ["auto", "low", "medium", "high", "max"]
 
+        # Store device-reported limits for our own clamping.  We also update
+        # _attr_min/max_temp when present so the thermostat card shows the right
+        # range, but we never read back _attr_min/max_temp in set_temperature to
+        # avoid AttributeError on HA versions that don't pre-declare them.
         min_setpoint = device.get("MinSetpoint")
         max_setpoint = device.get("MaxSetpoint")
-        if min_setpoint is not None:
-            self._attr_min_temp = float(min_setpoint)
-        if max_setpoint is not None:
-            self._attr_max_temp = float(max_setpoint)
+        self._device_min_temp: float | None = float(min_setpoint) if min_setpoint is not None else None
+        self._device_max_temp: float | None = float(max_setpoint) if max_setpoint is not None else None
+        if self._device_min_temp is not None:
+            self._attr_min_temp = self._device_min_temp
+        if self._device_max_temp is not None:
+            self._attr_max_temp = self._device_max_temp
 
         self._pending_target_temperature: float | None = None
         self._pending_hvac_mode: HVACMode | None = None
@@ -156,10 +162,10 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
 
         # Mysa setpoints are in 0.5C increments.
         setpoint = round(setpoint * 2) / 2
-        if self._attr_min_temp is not None:
-            setpoint = max(setpoint, float(self._attr_min_temp))
-        if self._attr_max_temp is not None:
-            setpoint = min(setpoint, float(self._attr_max_temp))
+        if self._device_min_temp is not None:
+            setpoint = max(setpoint, self._device_min_temp)
+        if self._device_max_temp is not None:
+            setpoint = min(setpoint, self._device_max_temp)
 
         self._pending_target_temperature = setpoint
         self.async_write_ha_state()
@@ -177,8 +183,8 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
             self._device_id,
             requested_temperature,
             setpoint,
-            self._attr_min_temp,
-            self._attr_max_temp,
+            self._device_min_temp,
+            self._device_max_temp,
             mode,
         )
 
