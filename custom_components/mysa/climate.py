@@ -285,8 +285,8 @@ class MysaClimateEntity(MysaEntity, ClimateEntity):
         try:
             resent = False
             for attempt in range(6):
-                await asyncio.sleep(2)
-                await self.coordinator.async_request_refresh()
+                await asyncio.sleep(3)
+                await self.coordinator.async_refresh()
                 current_setpoint = _state_value(self.state_obj, "SetPoint")
                 current_mode = self.hvac_mode
                 current_fan = self.fan_mode

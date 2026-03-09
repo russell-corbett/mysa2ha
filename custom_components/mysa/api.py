@@ -12,6 +12,7 @@ from datetime import datetime
 from typing import Any
 
 from aiohttp import ClientError
+from botocore.config import Config as BotocoreConfig
 from botocore.exceptions import BotoCoreError, ClientError as BotoClientError
 import boto3
 from pycognito.aws_srp import AWSSRP
@@ -207,7 +208,6 @@ class MysaApiClient:
 
     def _publish_iot_command_sync(self, topic: str, payload: bytes, creds: IotCredentials) -> None:
         """Publish command to AWS IoT (blocking, run in worker thread)."""
-        # Reuse the cached client as long as credentials haven't changed.
         if self._iot_client is None or self._iot_credentials is not creds:
             self._iot_client = boto3.client(
                 "iot-data",
@@ -216,8 +216,8 @@ class MysaApiClient:
                 aws_access_key_id=creds.access_key_id,
                 aws_secret_access_key=creds.secret_key,
                 aws_session_token=creds.session_token,
+                config=BotocoreConfig(max_pool_connections=25),
             )
-        # Publish on both forms because some clients/topics are configured without a leading slash.
         self._iot_client.publish(topic=topic, qos=1, payload=payload)
         if topic.startswith("/"):
             self._iot_client.publish(topic=topic[1:], qos=1, payload=payload)
