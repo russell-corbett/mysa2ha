@@ -27,6 +27,7 @@ mysa2ha connects your [Mysa](https://getmysa.com) smart thermostats to Home Assi
 | **Climate entity** | Set target temperature, HVAC mode, and fan speed |
 | **Sensors** | Current temperature, humidity, live power (W), accumulated energy (Wh) |
 | **Optimistic UI** | State updates instantly in the HA UI; confirmed against the device within ~12 s |
+| **Device selection** | Choose which thermostats to add during setup; change the selection at any time from the Configure page |
 | **Auto-discovery** | All Mysa devices on your account are discovered automatically, re-checked hourly |
 | **Realtime updates** | Devices are asked to publish frequent state updates; falls back to polling |
 | **Poll interval** | Configurable from 5 s to 600 s (default 10 s) via the integration options |
@@ -45,7 +46,7 @@ mysa2ha connects your [Mysa](https://getmysa.com) smart thermostats to Home Assi
 5. Search for **Mysa** in HACS and install it.
 6. Restart Home Assistant.
 7. Go to **Settings → Devices & Services → Add Integration**.
-8. Search for **Mysa** and enter your Mysa account credentials.
+8. Search for **Mysa**, enter your account credentials, then select which thermostats to add.
 
 ### Manual
 
@@ -53,7 +54,7 @@ mysa2ha connects your [Mysa](https://getmysa.com) smart thermostats to Home Assi
 2. Copy the `custom_components/mysa` folder into your Home Assistant `config/custom_components/` directory.
 3. Restart Home Assistant.
 4. Go to **Settings → Devices & Services → Add Integration**.
-5. Search for **Mysa** and enter your Mysa account credentials.
+5. Search for **Mysa**, enter your account credentials, then select which thermostats to add.
 
 ---
 
@@ -78,11 +79,23 @@ Each thermostat creates the following entities in Home Assistant:
 
 ## Configuration
 
-After adding the integration, options can be changed via **Settings → Devices & Services → Mysa → Configure**:
+### Setup
 
-| Option | Default | Range | Description |
+Adding the integration is a two-step process:
+
+1. **Credentials** — enter your Mysa account email and password. The integration logs in and fetches your device list.
+2. **Select thermostats** — a checklist of every thermostat on your account is shown, with all of them pre-selected. Uncheck any you don't want in Home Assistant, then click **Submit**.
+
+### Options
+
+After setup, go to **Settings → Devices & Services → Mysa → Configure** to adjust:
+
+| Option | Default | Range / Type | Description |
 |---|---|---|---|
 | Poll interval | 10 s | 5 – 600 s | How often HA polls the Mysa API for device state |
+| Active thermostats | All | Checklist | Which thermostats are active in Home Assistant. Uncheck a device to remove it without deleting the integration. |
+
+> **Tip:** The thermostat list in the options page is refreshed from Mysa every hour. If you have just added a new thermostat to your Mysa account and it doesn't appear, wait a few minutes and reopen the Configure page.
 
 ---
 

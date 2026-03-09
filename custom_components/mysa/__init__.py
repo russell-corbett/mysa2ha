@@ -9,9 +9,10 @@ from homeassistant.config_entries import ConfigEntry
 from homeassistant.const import CONF_PASSWORD, CONF_USERNAME
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
+from homeassistant.helpers import device_registry as dr
 
 from .api import MysaApiClient, MysaAuthError, MysaCannotConnect, MysaError
-from .const import CONF_POLL_INTERVAL, CONF_SELECTED_DEVICES, DEFAULT_POLL_INTERVAL, PLATFORMS
+from .const import CONF_POLL_INTERVAL, CONF_SELECTED_DEVICES, DEFAULT_POLL_INTERVAL, DOMAIN, PLATFORMS
 from .coordinator import MysaDataUpdateCoordinator
 
 
@@ -60,6 +61,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: MysaConfigEntry) -> bool
         raise ConfigEntryNotReady(f"Unexpected Mysa error: {err}") from err
 
     entry.runtime_data = MysaRuntimeData(client=client, coordinator=coordinator)
+
+    if selected_device_ids is not None:
+        dev_reg = dr.async_get(hass)
+        for device_entry in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):
+            mysa_id = next(
+                (ident[1] for ident in device_entry.identifiers if ident[0] == DOMAIN),
+                None,
+            )
+            if mysa_id is not None and mysa_id not in selected_device_ids:
+                dev_reg.async_remove_device(device_entry.id)
 
     await hass.config_entries.async_forward_entry_setups(entry, PLATFORMS)
     entry.async_on_unload(entry.add_update_listener(_async_update_listener))
