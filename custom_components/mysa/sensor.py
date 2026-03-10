@@ -7,7 +7,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from homeassistant.components.sensor import (
-    RestoreSensor,
     SensorDeviceClass,
     SensorEntity,
     SensorEntityDescription,
@@ -139,7 +138,7 @@ class MysaSensorEntity(MysaEntity, SensorEntity):
         return float(value)
 
 
-class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
+class MysaEnergySensorEntity(MysaEntity, SensorEntity):
     """Energy sensor that integrates power (W) over time into Wh."""
 
     _attr_name = "Total energy"
@@ -158,10 +157,39 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
         self._restored: bool = False
 
     async def async_added_to_hass(self) -> None:
-        """Restore last known energy on startup."""
+        """Restore last known energy from statistics database on startup."""
         await super().async_added_to_hass()
-        if (last := await self.async_get_last_sensor_data()) is not None:
-            self._total_energy_wh = float(last.native_value) if last.native_value is not None else 0.0
+
+        try:
+            from homeassistant.components.recorder import get_instance
+            from homeassistant.components.recorder.statistics import (
+                statistics_during_period,
+            )
+
+            statistic_id = self.entity_id
+            now = dt_util.utcnow()
+            start = now - datetime.timedelta(days=7)
+
+            recorder = get_instance(self.hass)
+            stats = await recorder.async_add_executor_job(
+                statistics_during_period,
+                self.hass,
+                start,
+                None,
+                {statistic_id},
+                "hour",
+                None,
+                {"state", "sum"},
+            )
+
+            if stats and statistic_id in stats and stats[statistic_id]:
+                last_stat = stats[statistic_id][-1]
+                last_value = last_stat.get("sum") or last_stat.get("state")
+                if last_value is not None and float(last_value) > 0:
+                    self._total_energy_wh = float(last_value)
+        except Exception:
+            pass  # If statistics lookup fails, keep at 0
+
         self._restored = True
         self.async_write_ha_state()
 
@@ -169,7 +197,7 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
     def _handle_coordinator_update(self) -> None:
         """Integrate power into energy on each coordinator update."""
         if not self._restored:
-            self._last_update = None  # prevent integrating the gap on first real update
+            self._last_update = None
             return
 
         now = dt_util.utcnow()
