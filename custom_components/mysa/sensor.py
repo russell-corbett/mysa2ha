@@ -145,7 +145,7 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
     _attr_name = "Total energy"
     _attr_native_unit_of_measurement = UnitOfEnergy.WATT_HOUR
     _attr_device_class = SensorDeviceClass.ENERGY
-    _attr_state_class = SensorStateClass.TOTAL_INCREASING
+    _attr_state_class = SensorStateClass.TOTAL
     _attr_suggested_display_precision = 2
 
     def __init__(self, coordinator, device: dict[str, Any]) -> None:
