@@ -169,6 +169,7 @@ class MysaEnergySensorEntity(MysaEntity, RestoreSensor):
     def _handle_coordinator_update(self) -> None:
         """Integrate power into energy on each coordinator update."""
         if not self._restored:
+            self._last_update = None  # prevent integrating the gap on first real update
             return
 
         now = dt_util.utcnow()
