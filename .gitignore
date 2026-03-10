@@ -1,0 +1,4 @@
+/custom_components/mysa/__pycache__
+/tests/__pycache__/*
+/tests/components/__pycache__/
+/tests/components/mysa/__pycache__

@@ -62,6 +62,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: MysaConfigEntry) -> bool
 
     entry.runtime_data = MysaRuntimeData(client=client, coordinator=coordinator)
 
+    # Start MQTT real-time subscriptions now that we have authenticated credentials
+    # and an initial device list.  Cleanup is registered via async_on_unload so
+    # it runs automatically when the entry is unloaded or reloaded.
+    await coordinator.async_start_realtime()
+    entry.async_on_unload(coordinator.async_stop_realtime)
+
     if selected_device_ids is not None:
         dev_reg = dr.async_get(hass)
         for device_entry in dr.async_entries_for_config_entry(dev_reg, entry.entry_id):

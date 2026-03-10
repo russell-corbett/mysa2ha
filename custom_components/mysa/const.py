@@ -21,8 +21,8 @@ DEFAULT_POLL_INTERVAL = 10
 MIN_POLL_INTERVAL = 5
 MAX_POLL_INTERVAL = 600
 CONF_SELECTED_DEVICES = "selected_devices"
-REALTIME_TIMEOUT_SECONDS = 600
-REALTIME_KEEPALIVE_SECONDS = 90
+REALTIME_TIMEOUT_SECONDS = 300   # Device publishes for 300s after each MsgType 11 (matches mysa-js-sdk)
+REALTIME_KEEPALIVE_SECONDS = 290  # Renew MsgType 11 just before the 300s timeout expires
 
 PLATFORMS = ["climate", "sensor"]
 

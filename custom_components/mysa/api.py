@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import hmac
 import json
 import logging
 import time
+import urllib.parse
 from collections.abc import Mapping
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any
 
 from aiohttp import ClientError
@@ -32,6 +35,7 @@ from .const import (
     COGNITO_USER_POOL_ID,
     FAN_TO_RAW,
     IOT_DATA_ENDPOINT,
+    IOT_DATA_HOST,
     MODE_TO_RAW,
     REALTIME_TIMEOUT_SECONDS,
 )
@@ -152,6 +156,21 @@ class MysaApiClient:
         payload_bytes = json.dumps(payload, separators=(",", ":")).encode("utf-8")
         topic = f"/v1/dev/{device['Id']}/in"
         await self._async_publish_iot_payload(topic, payload_bytes)
+
+    async def async_get_signed_ws_url(self) -> str:
+        """Build a SigV4-signed WebSocket URL for AWS IoT MQTT.
+
+        Called by MysaMqttClient on every (re)connect so that fresh temporary
+        credentials are embedded in each signed URL.
+        """
+        creds = await self._async_get_iot_credentials()
+        return _build_signed_ws_url(
+            host=IOT_DATA_HOST,
+            access_key=creds.access_key_id,
+            secret_key=creds.secret_key,
+            session_token=creds.session_token,
+            region=AWS_REGION,
+        )
 
     async def async_start_publishing_device_status(
         self,
@@ -436,6 +455,86 @@ class MysaApiClient:
         }
 
         return _strip_none(payload)
+
+
+def _build_signed_ws_url(
+    host: str,
+    access_key: str,
+    secret_key: str,
+    session_token: str,
+    region: str,
+) -> str:
+    """Build a SigV4 query-signed WebSocket URL for AWS IoT MQTT.
+
+    AWS IoT requires a non-standard SigV4 variant where the session token is
+    appended to the URL *after* the signature is calculated (not included in the
+    canonical request).  This matches the behaviour of aws-iot-device-sdk-js-v2.
+    """
+    service = "iotdevicegateway"
+    algorithm = "AWS4-HMAC-SHA256"
+
+    now = datetime.now(timezone.utc)
+    date_str = now.strftime("%Y%m%d")
+    datetime_str = now.strftime("%Y%m%dT%H%M%SZ")
+
+    credential_scope = f"{date_str}/{region}/{service}/aws4_request"
+    credential = f"{access_key}/{credential_scope}"
+
+    # Build the canonical query string — session token intentionally omitted.
+    qs_params = [
+        ("X-Amz-Algorithm", algorithm),
+        ("X-Amz-Credential", credential),
+        ("X-Amz-Date", datetime_str),
+        ("X-Amz-Expires", "86400"),
+        ("X-Amz-SignedHeaders", "host"),
+    ]
+    canonical_qs = "&".join(
+        f"{urllib.parse.quote(k, safe='')}={urllib.parse.quote(v, safe='')}"
+        for k, v in qs_params
+    )
+
+    # Canonical request uses the HTTPS path even though we connect via WSS.
+    canonical_headers = f"host:{host}\n"
+    canonical_request = "\n".join(
+        [
+            "GET",
+            "/mqtt",
+            canonical_qs,
+            canonical_headers,
+            "host",
+            hashlib.sha256(b"").hexdigest(),  # empty payload hash
+        ]
+    )
+
+    string_to_sign = "\n".join(
+        [
+            algorithm,
+            datetime_str,
+            credential_scope,
+            hashlib.sha256(canonical_request.encode()).hexdigest(),
+        ]
+    )
+
+    def _hmac(key: bytes, data: str) -> bytes:
+        return hmac.new(key, data.encode(), hashlib.sha256).digest()
+
+    signing_key = _hmac(
+        _hmac(
+            _hmac(
+                _hmac(f"AWS4{secret_key}".encode(), date_str),
+                region,
+            ),
+            service,
+        ),
+        "aws4_request",
+    )
+    signature = hmac.new(signing_key, string_to_sign.encode(), hashlib.sha256).hexdigest()
+
+    wss_url = f"wss://{host}/mqtt?{canonical_qs}&X-Amz-Signature={signature}"
+    # Append session token AFTER signature — AWS IoT quirk.
+    if session_token:
+        wss_url += f"&X-Amz-Security-Token={urllib.parse.quote(session_token, safe='')}"
+    return wss_url
 
 
 def _extract_aws_error_code(data: dict[str, Any]) -> str:
