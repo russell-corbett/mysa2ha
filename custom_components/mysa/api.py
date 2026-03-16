@@ -8,7 +8,9 @@ import hmac
 import json
 import logging
 import time
+import urllib.error
 import urllib.parse
+import urllib.request
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -47,6 +49,55 @@ _AUTH_ERROR_CODES = {
     "UserNotFoundException",
     "ResourceNotFoundException",
 }
+
+
+class _CognitoIdpHttpError(Exception):
+    """HTTP-level Cognito IDP error; mirrors the BotoClientError.response shape."""
+
+    def __init__(self, code: str, message: str) -> None:
+        super().__init__(message)
+        self.response = {"Error": {"Code": code, "Message": message}}
+
+
+class _CognitoIdpHttpClient:
+    """Minimal synchronous Cognito IDP transport using urllib (no boto3 service data needed).
+
+    Implements the two methods that pycognito.AWSSRP.authenticate_user() calls.
+    """
+
+    def __init__(self, endpoint: str) -> None:
+        self._endpoint = endpoint
+
+    def _call(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
+        data = json.dumps({k: v for k, v in payload.items() if v is not None}).encode()
+        req = urllib.request.Request(
+            self._endpoint,
+            data=data,
+            headers={
+                "Content-Type": "application/x-amz-json-1.1",
+                "X-Amz-Target": f"AWSCognitoIdentityProviderService.{operation}",
+            },
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=30) as resp:
+                return json.loads(resp.read())
+        except urllib.error.HTTPError as err:
+            body: dict[str, Any] = {}
+            try:
+                body = json.loads(err.read())
+            except Exception:
+                pass
+            code = str(body.get("__type") or "UnknownError").split("#")[-1]
+            message = str(body.get("message") or body.get("Message") or err.reason)
+            raise _CognitoIdpHttpError(code, message) from err
+        except Exception as err:
+            raise _CognitoIdpHttpError("ConnectionError", str(err)) from err
+
+    def initiate_auth(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("InitiateAuth", kwargs)
+
+    def respond_to_auth_challenge(self, **kwargs: Any) -> dict[str, Any]:
+        return self._call("RespondToAuthChallenge", kwargs)
 
 
 class MysaError(Exception):
@@ -104,12 +155,12 @@ class MysaApiClient:
         """Authenticate with Cognito username/password."""
         try:
             data = await asyncio.to_thread(self._srp_authenticate_sync)
-        except BotoClientError as err:
+        except (BotoClientError, _CognitoIdpHttpError) as err:
             code = err.response.get("Error", {}).get("Code", "UnknownError")
             message = err.response.get("Error", {}).get("Message", str(err))
             if code in _AUTH_ERROR_CODES:
                 raise MysaAuthError(message) from err
-            raise MysaError(f"Cognito SRP auth failed ({code}): {message}") from err
+            raise MysaCannotConnect(f"Cognito SRP auth failed ({code}): {message}") from err
         except (BotoCoreError, ValueError) as err:
             raise MysaCannotConnect(f"Cognito SRP auth failed: {err}") from err
 
@@ -117,8 +168,8 @@ class MysaApiClient:
         self._set_tokens_from_auth_result(auth_result, require_refresh=True)
 
     def _srp_authenticate_sync(self) -> dict[str, Any]:
-        """Perform SRP auth using AWS Cognito."""
-        cognito_idp = boto3.client("cognito-idp", region_name=AWS_REGION)
+        """Perform SRP auth using AWS Cognito (direct HTTP, no boto3 service data needed)."""
+        cognito_idp = _CognitoIdpHttpClient(COGNITO_IDP_ENDPOINT)
         aws_srp = AWSSRP(
             username=self.username,
             password=self.password,
